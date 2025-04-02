@@ -15,7 +15,7 @@ class MCPClient:
         self.exit_stack = AsyncExitStack()
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
         self.base_url = os.getenv("BASE_URL")
-        self.model = os.getenv("MODEL")
+        self.model = os.getenv("MODELa")
 
         if not self.openai_api_key:
             raise ValueError("未找到apikey")
