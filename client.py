@@ -70,20 +70,34 @@ class MCPClient:
         } for tool in response.tools]
         print(available_tools)
 
-        # 第一次调用API，检查是否需要工具调用
-        response = self.client.chat.completions.create(
+        collected_messages = []
+        first_stream = self.client.chat.completions.create(
             model=self.model,
             messages=messages,
             tools=available_tools,
-            stream=False  # 首次调用不使用流式输出
+            stream=True
         )
-        
-        content = response.choices[0]
-        collected_messages = []
 
-        # 如果需要工具调用
-        if content.finish_reason == "tool_calls":
-            tool_call = content.message.tool_calls[0]
+        tool_calls = []
+        full_message = {}
+        
+        # 收集第一次流式输出的内容
+        for chunk in first_stream:
+            if chunk.choices[0].delta.tool_calls:
+                # 收集工具调用信息
+                if len(tool_calls) == 0:
+                    tool_calls.append(chunk.choices[0].delta.tool_calls[0])
+                else:
+                    if chunk.choices[0].delta.tool_calls[0].function.arguments:
+                        tool_calls[0].function.arguments += chunk.choices[0].delta.tool_calls[0].function.arguments
+            elif chunk.choices[0].delta.content:
+                # 正常的文本内容
+                print(chunk.choices[0].delta.content, end="", flush=True)
+                collected_messages.append(chunk.choices[0].delta.content)
+
+        # 如果有工具调用
+        if tool_calls:
+            tool_call = tool_calls[0]
             tool_name = tool_call.function.name
             tool_args = json.loads(tool_call.function.arguments)
 
@@ -91,39 +105,36 @@ class MCPClient:
             result = await self.session.call_tool(tool_name, tool_args)
             print(f"\n\n[Calling tool {tool_name} with args {tool_args}]\n\n")
 
-            # 将工具调用结果添加到消息历史
-            messages.append(content.message.model_dump())
+            # 构建包含工具调用结果的新消息
+            messages.append({
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": tool_call.id,
+                    "function": {"name": tool_name, "arguments": json.dumps(tool_args)},
+                    "type": "function"
+                }]
+            })
             messages.append({
                 "role": "tool",
                 "content": result.content[0].text,
                 "tool_call_id": tool_call.id
             })
 
-            # 使用更新后的消息历史进行流式输出
+            # 第二次流式输出
             print("\nAI: ", end="", flush=True)
-            stream = self.client.chat.completions.create(
+            second_stream = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 stream=True
             )
             
-            for chunk in stream:
+            collected_messages = []  # 重置收集的消息
+            for chunk in second_stream:
                 if chunk.choices[0].delta.content:
                     print(chunk.choices[0].delta.content, end="", flush=True)
                     collected_messages.append(chunk.choices[0].delta.content)
             print()
-        else:
-            # 如果不需要工具调用，直接流式输出
-            stream = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                stream=True
-            )
-            
-            for chunk in stream:
-                if chunk.choices[0].delta.content:
-                    print(chunk.choices[0].delta.content, end="", flush=True)
-                    collected_messages.append(chunk.choices[0].delta.content)
         
         return "".join(collected_messages)
 
