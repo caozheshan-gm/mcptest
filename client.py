@@ -54,11 +54,8 @@ class MCPClient:
         print("\n已连接到服务器,支持以下工具:",[tool.name for tool in tools])
 
     
-    async def process_query(self,query:str) -> str:
-        """调用openai api"""
-        # messages = [{"role":"system","content":"永远用中文回答"},
-        #             {"role":"user","content":query}]
-        
+    async def process_query(self, query:str) -> str:
+        """调用openai api，支持流式输出"""
         messages = [{"role":"user","content":query}]
         
         response = await self.session.list_tools()
@@ -73,35 +70,62 @@ class MCPClient:
         } for tool in response.tools]
         print(available_tools)
 
+        # 第一次调用API，检查是否需要工具调用
         response = self.client.chat.completions.create(
-            model = self.model,
+            model=self.model,
             messages=messages,
-            tools=available_tools
+            tools=available_tools,
+            stream=False  # 首次调用不使用流式输出
         )
         
         content = response.choices[0]
+        collected_messages = []
+
+        # 如果需要工具调用
         if content.finish_reason == "tool_calls":
             tool_call = content.message.tool_calls[0]
             tool_name = tool_call.function.name
             tool_args = json.loads(tool_call.function.arguments)
 
-            result = await self.session.call_tool(tool_name,tool_args)
+            # 调用工具
+            result = await self.session.call_tool(tool_name, tool_args)
             print(f"\n\n[Calling tool {tool_name} with args {tool_args}]\n\n")
 
+            # 将工具调用结果添加到消息历史
             messages.append(content.message.model_dump())
             messages.append({
-                "role":"tool",
-                "content":result.content[0].text,
-                "tool_call_id":tool_call.id
+                "role": "tool",
+                "content": result.content[0].text,
+                "tool_call_id": tool_call.id
             })
 
-            response = self.client.chat.completions.create(
+            # 使用更新后的消息历史进行流式输出
+            print("\nAI: ", end="", flush=True)
+            stream = self.client.chat.completions.create(
                 model=self.model,
-                messages=messages
+                messages=messages,
+                stream=True
             )
-            return response.choices[0].message.content
+            
+            for chunk in stream:
+                if chunk.choices[0].delta.content:
+                    print(chunk.choices[0].delta.content, end="", flush=True)
+                    collected_messages.append(chunk.choices[0].delta.content)
+            print()
+        else:
+            # 如果不需要工具调用，直接流式输出
+            stream = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                stream=True
+            )
+            
+            for chunk in stream:
+                if chunk.choices[0].delta.content:
+                    print(chunk.choices[0].delta.content, end="", flush=True)
+                    collected_messages.append(chunk.choices[0].delta.content)
         
-        return content.message.content
+        return "".join(collected_messages)
 
 
     async def chat_loop(self):
@@ -114,8 +138,8 @@ class MCPClient:
                 if query.lower() == 'quit':
                     break
 
+                print("\nAI: ", end="", flush=True)  # 在开始流式输出前打印提示
                 response = await self.process_query(query)
-                print(f"\n AI:{response}")
 
             except Exception as e:
                 print(f"\n发生错误: {str(e)}")
